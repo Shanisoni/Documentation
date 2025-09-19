@@ -1,1338 +1,501 @@
-# GEO Score Integration System: Complete Technical Guide
+# GEO Platform: Integration Documentation - Part 3
 
-## Executive Summary
+## 6. Database Schema: The Information Foundation
 
-This document provides a **100x detailed** technical and theoretical explanation of how to integrate three separate GEO scoring backends (Crawler, Prompt Engine, and Server Logs) into a unified scoring system with a single React dashboard. The system uses a **coordinator pattern** to aggregate individual scores using dynamic weighting based on service availability.
+### The Complete Data Model
 
----
+Think of our database like a **well-organized library system**. Each table is like a different section of the library, and the relationships between tables are like the cross-references that help you find related information.
 
-## Table of Contents
+### Core Entities Explained
 
-1. [System Architecture Overview](#1-system-architecture-overview)
-2. [Data Flow and Integration Patterns](#2-data-flow-and-integration-patterns)
-3. [Scoring Algorithm Deep Dive](#3-scoring-algorithm-deep-dive)
-4. [API Design and Implementation](#4-api-design-and-implementation)
-5. [Database Schema and Data Management](#5-database-schema-and-data-management)
-6. [Frontend Integration and UI Components](#6-frontend-integration-and-ui-components)
-7. [Error Handling and Resilience](#7-error-handling-and-resilience)
-8. [Performance Optimization and Caching](#8-performance-optimization-and-caching)
-9. [Security and Compliance](#9-security-and-compliance)
-10. [Deployment and Infrastructure](#10-deployment-and-infrastructure)
+#### Sites Table (The Library Catalog)
+**What it represents:** Each client website we're monitoring
 
----
+**Plain English:** Like having a card in the library catalog for each bookstore we're tracking
 
-## 1. System Architecture Overview
+**Technical Definition:** Stores metadata about client websites including domain, crawl settings, and configuration
 
-### High-Level Architecture Diagram
+**Key Fields:**
+- `id`: Unique identifier (like a library card number)
+- `domain`: Website URL (like "samsung.com")
+- `name`: Human-readable name (like "Samsung Electronics")
+- `crawl_frequency`: How often to check for updates (daily, weekly, monthly)
+- `is_active`: Whether we're currently monitoring this site
+- `created_at`: When we first started tracking this site
 
-```mermaid
-graph TB
-    subgraph "Client Layer"
-        A[React Dashboard] --> B[GEO Score Display]
-        A --> C[Score Breakdown]
-        A --> D[Service Status]
-    end
-    
-    subgraph "API Gateway Layer"
-        E[Coordinator API] --> F[Authentication]
-        E --> G[Rate Limiting]
-        E --> H[Request Routing]
-    end
-    
-    subgraph "Service Layer"
-        I[Crawler Service] --> J[Crawler GEO API]
-        K[Prompt Engine] --> L[Prompt GEO API]
-        M[Server Logs] --> N[Logs GEO API]
-    end
-    
-    subgraph "Data Layer"
-        O[(PostgreSQL)] --> P[Tenant Features]
-        O --> Q[Score Cache]
-        R[(Redis Cache)] --> S[Session Data]
-        R --> T[API Response Cache]
-    end
-    
-    subgraph "External Services"
-        U[Upstash Redis]
-        V[Supabase Database]
-        W[Vercel Hosting]
-    end
-    
-    A --> E
-    E --> I
-    E --> K
-    E --> M
-    E --> O
-    E --> R
-    
-    style A fill:#e1f5fe
-    style E fill:#f3e5f5
-    style O fill:#e8f5e8
-    style R fill:#fff3e0
+**Real-World Example:**
+```json
+{
+  "id": 1,
+  "domain": "samsung.com",
+  "name": "Samsung Electronics",
+  "crawl_frequency": "daily",
+  "is_active": true,
+  "created_at": "2024-01-15T10:00:00Z"
+}
 ```
 
-### Component Responsibilities
+#### Pages Table (Individual Books)
+**What it represents:** Every webpage we've crawled from each site
 
-#### React Dashboard (Frontend)
-- **Primary Function:** Display unified GEO scores and breakdowns
-- **Key Features:** Real-time updates, service status indicators, score history
-- **Technology Stack:** React 18+, TypeScript, Tailwind CSS, React Query
+**Plain English:** Like having a record for each book in the library
 
-#### Coordinator API (Backend)
-- **Primary Function:** Aggregate scores from multiple services
-- **Key Features:** Dynamic weighting, error handling, caching, rate limiting
-- **Technology Stack:** Node.js, Express.js, TypeScript, BullMQ
+**Technical Definition:** Stores individual page metadata including URL, title, and crawl status
 
-#### Individual Service APIs
-- **Crawler Service:** Provides content quality and crawl coverage scores
-- **Prompt Engine:** Provides AI response quality and relevance scores
-- **Server Logs:** Provides AI crawler presence and activity scores
+**Key Fields:**
+- `id`: Unique page identifier
+- `site_id`: Which website this page belongs to (foreign key)
+- `url`: Full URL of the page
+- `title`: Page title from HTML
+- `crawl_status`: Whether crawling succeeded, failed, or is pending
+- `last_crawled_at`: When we last checked this page
+- `content_hash`: Unique fingerprint of the page content
 
----
+**Relationship:** A site has many pages (one-to-many)
 
-## 2. Data Flow and Integration Patterns
+#### Content Blocks Table (Book Chapters)
+**What it represents:** Chunks of text content extracted from pages
 
-### Complete Data Flow Sequence
+**Plain English:** Like having separate records for each chapter or section of a book
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant R as React Dashboard
-    participant C as Coordinator API
-    participant CR as Crawler API
-    participant P as Prompt API
-    participant L as Logs API
-    participant DB as Database
-    participant CACHE as Redis Cache
+**Technical Definition:** Stores parsed content blocks with metadata for AI processing
 
-    U->>R: Opens dashboard
-    R->>C: GET /api/sites/:siteId/geo
-    C->>DB: Check tenant features
-    DB-->>C: Return logs_enabled status
-    
-    par Parallel API Calls
-        C->>CR: GET /geo/:siteId
-        CR-->>C: {score: 72, computed_at: "2024-01-15T10:00:00Z"}
-    and
-        C->>P: GET /geo/:siteId
-        P-->>C: {score: 60, computed_at: "2024-01-15T10:00:00Z"}
-    and
-        alt Logs Enabled
-            C->>L: GET /geo/:siteId
-            L-->>C: {score: 80, computed_at: "2024-01-15T10:00:00Z"}
-        else Logs Disabled
-            C->>C: Skip logs API call
-        end
-    end
-    
-    C->>C: Calculate weighted average
-    C->>CACHE: Store computed score
-    C-->>R: Return unified GEO score
-    R->>U: Display score and breakdown
-```
+**Key Fields:**
+- `id`: Unique block identifier
+- `page_id`: Which page this content came from
+- `block_type`: Type of content (heading, paragraph, list, etc.)
+- `content`: The actual text content
+- `position`: Order within the page
+- `word_count`: Number of words in this block
+- `language`: Detected language of the content
 
-### Integration Patterns
+**Relationship:** A page has many content blocks (one-to-many)
 
-#### 1. Coordinator Pattern
-**Purpose:** Centralized orchestration of multiple service calls
-**Benefits:** 
-- Single point of failure management
-- Consistent error handling
-- Unified response format
-- Centralized caching
+#### Embeddings Table (Search Index)
+**What it represents:** Vector representations of content for AI similarity search
 
-#### 2. Circuit Breaker Pattern
-**Purpose:** Prevent cascade failures when individual services are down
-**Implementation:**
-```typescript
-class CircuitBreaker {
-  private failureCount = 0;
-  private lastFailureTime = 0;
-  private readonly threshold = 5;
-  private readonly timeout = 60000; // 1 minute
+**Plain English:** Like having a search index that can find similar content even if the words are different
 
-  async call<T>(fn: () => Promise<T>): Promise<T | null> {
-    if (this.isOpen()) {
-      return null; // Circuit is open, don't call
-    }
-    
-    try {
-      const result = await fn();
-      this.onSuccess();
-      return result;
-    } catch (error) {
-      this.onFailure();
-      throw error;
-    }
+**Technical Definition:** Stores vector embeddings generated from content blocks for RAG (Retrieval Augmented Generation)
+
+**Key Fields:**
+- `id`: Unique embedding identifier
+- `content_block_id`: Which content block this represents
+- `vector`: The actual embedding vector (array of numbers)
+- `model_version`: Which AI model generated this embedding
+- `dimensions`: Size of the vector (e.g., 1536 for OpenAI embeddings)
+
+**Why we need this:** AI assistants can find relevant content even when questions use different words than the original content.
+
+#### Prompt Templates Table (Survey Questions)
+**What it represents:** Reusable question templates for testing AI performance
+
+**Plain English:** Like having a library of survey questions we can ask AI assistants
+
+**Technical Definition:** Stores prompt templates with variables for systematic AI testing
+
+**Key Fields:**
+- `id`: Unique template identifier
+- `name`: Human-readable name (like "Best Phone Under Budget")
+- `template`: The question template with variables
+- `category`: Type of question (product comparison, feature inquiry, etc.)
+- `variables`: JSON object defining template variables
+- `is_active`: Whether this template is currently being used
+
+**Example Template:**
+```json
+{
+  "id": 1,
+  "name": "Best Phone Under Budget",
+  "template": "What's the best {product_type} under ${budget}?",
+  "category": "product_comparison",
+  "variables": {
+    "product_type": ["smartphone", "laptop", "tablet"],
+    "budget": [500, 1000, 1500]
   }
 }
 ```
 
-#### 3. Retry Pattern with Exponential Backoff
-**Purpose:** Handle transient failures gracefully
-**Implementation:**
-```typescript
-async function retryWithBackoff<T>(
-  fn: () => Promise<T>,
-  maxRetries = 3,
-  baseDelay = 1000
-): Promise<T> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      if (attempt === maxRetries) throw error;
-      
-      const delay = baseDelay * Math.pow(2, attempt);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-}
-```
+#### Prompt Runs Table (Survey Results)
+**What it represents:** Individual executions of prompt templates with results
 
----
+**Plain English:** Like having a record of each time we asked a survey question and got an answer
 
-## 3. Scoring Algorithm Deep Dive
+**Technical Definition:** Stores prompt execution details and AI responses
 
-### Mathematical Foundation
+**Key Fields:**
+- `id`: Unique run identifier
+- `template_id`: Which template was used
+- `site_id`: Which website this test was for
+- `prompt_text`: The actual question asked
+- `ai_response`: The AI assistant's answer
+- `response_time_ms`: How long the AI took to respond
+- `tokens_used`: Number of AI tokens consumed
+- `quality_score`: Our assessment of response quality
 
-The unified GEO score is calculated using a **dynamic weighted average** approach:
+#### Server Logs Table (Visitor Records)
+**What it represents:** Individual log entries from website servers
 
-```
-GEO_Score = Σ(Score_i × Weight_i) / Σ(Weight_i)
-```
+**Plain English:** Like having a guest book that records every visitor to a store
 
-Where:
-- `Score_i` = Individual service score (0-100)
-- `Weight_i` = Dynamic weight based on service availability
-- `n` = Number of available services
+**Technical Definition:** Stores processed server log entries with AI crawler detection
 
-### Weight Calculation Logic
+**Key Fields:**
+- `id`: Unique log entry identifier
+- `site_id`: Which website this log is from
+- `timestamp`: When the visit occurred
+- `ip_address`: Visitor's IP address (may be redacted)
+- `user_agent`: Browser or bot identifier
+- `path`: Which page was visited
+- `is_ai_crawler`: Whether this was an AI bot
+- `crawler_type`: Specific AI system (ChatGPT, Claude, etc.)
 
-```mermaid
-flowchart TD
-    A[Start Weight Calculation] --> B[Count Available Services]
-    B --> C{How Many Services?}
-    
-    C -->|3 Services| D[Weight = 33.33% each]
-    C -->|2 Services| E[Weight = 50% each]
-    C -->|1 Service| F[Weight = 100%]
-    C -->|0 Services| G[Return Error]
-    
-    D --> H[Apply Weights]
-    E --> H
-    F --> H
-    G --> I[End with Error]
-    H --> J[Calculate Final Score]
-    J --> K[End]
-    
-    style A fill:#e1f5fe
-    style K fill:#e8f5e8
-    style G fill:#ffebee
-```
+#### GEO Scores Table (Performance Report)
+**What it represents:** Calculated performance scores for each website
 
-### Detailed Scoring Examples
+**Plain English:** Like having a report card that shows how well each student is doing
 
-#### Example 1: All Three Services Available
-```typescript
-const scores = {
-  crawler: { score: 72, computed_at: "2024-01-15T10:00:00Z" },
-  prompt: { score: 60, computed_at: "2024-01-15T10:00:00Z" },
-  logs: { score: 80, computed_at: "2024-01-15T10:00:00Z" }
-};
+**Technical Definition:** Stores calculated GEO scores with component breakdowns
 
-// Weight calculation
-const availableServices = 3;
-const weight = 100 / availableServices; // 33.33%
+**Key Fields:**
+- `id`: Unique score identifier
+- `site_id`: Which website this score is for
+- `overall_score`: Combined GEO score (0-100)
+- `content_quality`: Quality of content (0-100)
+- `crawl_coverage`: How much of the site is crawled (0-100)
+- `ai_crawler_presence`: How often AI bots visit (0-100)
+- `freshness`: How recent the content is (0-100)
+- `calculated_at`: When this score was calculated
+- `components`: JSON object with detailed breakdown
 
-// Score calculation
-const geoScore = (72 * 0.3333) + (60 * 0.3333) + (80 * 0.3333);
-// Result: 70.67
-```
-
-#### Example 2: Two Services Available (Logs Disabled)
-```typescript
-const scores = {
-  crawler: { score: 72, computed_at: "2024-01-15T10:00:00Z" },
-  prompt: { score: 60, computed_at: "2024-01-15T10:00:00Z" },
-  logs: null // Disabled
-};
-
-// Weight calculation
-const availableServices = 2;
-const weight = 100 / availableServices; // 50%
-
-// Score calculation
-const geoScore = (72 * 0.5) + (60 * 0.5);
-// Result: 66
-```
-
-#### Example 3: Single Service Available (Others Failed)
-```typescript
-const scores = {
-  crawler: { score: 72, computed_at: "2024-01-15T10:00:00Z" },
-  prompt: null, // API failed
-  logs: null    // API failed
-};
-
-// Weight calculation
-const availableServices = 1;
-const weight = 100 / availableServices; // 100%
-
-// Score calculation
-const geoScore = 72 * 1.0;
-// Result: 72
-```
-
-### Score Quality Assessment
-
-```mermaid
-graph LR
-    A[Raw Scores] --> B[Data Validation]
-    B --> C[Staleness Check]
-    C --> D[Quality Filtering]
-    D --> E[Weight Application]
-    E --> F[Final Calculation]
-    
-    B --> B1[Score Range: 0-100]
-    B --> B2[Valid Timestamp]
-    B --> B3[Non-null Values]
-    
-    C --> C1[Age < 24 hours]
-    C --> C2[Mark as Stale if > 24h]
-    
-    D --> D1[Remove Outliers]
-    D --> D2[Apply Confidence Scores]
-```
-
----
-
-## 4. API Design and Implementation
-
-### Coordinator API Endpoints
-
-#### Primary Endpoint: Get Unified GEO Score
-```typescript
-GET /api/sites/:siteId/geo
-```
-
-**Request Parameters:**
-- `siteId` (path): Unique identifier for the site
-- `includeBreakdown` (query, optional): Include detailed breakdown (default: true)
-- `forceRefresh` (query, optional): Bypass cache and force recalculation
-
-**Response Format:**
-```typescript
-interface GeoScoreResponse {
-  siteId: string;
-  geo: number; // 0-100
-  breakdown: {
-    crawler?: {
-      score: number;
-      weight: number;
-      computed_at: string;
-      status: 'active' | 'stale' | 'error';
-    };
-    prompt?: {
-      score: number;
-      weight: number;
-      computed_at: string;
-      status: 'active' | 'stale' | 'error';
-    };
-    logs?: {
-      score: number;
-      weight: number;
-      computed_at: string;
-      status: 'active' | 'stale' | 'error' | 'disabled';
-    };
-  };
-  computed_at: string;
-  cache_ttl: number;
-  services_available: number;
-  services_total: number;
-}
-```
-
-### Implementation Architecture
-
-```mermaid
-classDiagram
-    class CoordinatorAPI {
-        +getGeoScore(siteId: string): Promise<GeoScoreResponse>
-        +refreshScore(siteId: string): Promise<GeoScoreResponse>
-        +getScoreHistory(siteId: string): Promise<ScoreHistory[]>
-    }
-    
-    class ServiceClient {
-        +crawler: CrawlerClient
-        +prompt: PromptClient
-        +logs: LogsClient
-        +callAllServices(siteId: string): Promise<ServiceScores>
-    }
-    
-    class ScoreCalculator {
-        +calculateWeightedScore(scores: ServiceScores): number
-        +validateScore(score: ServiceScore): boolean
-        +checkStaleness(computed_at: string): boolean
-    }
-    
-    class CacheManager {
-        +get(key: string): Promise<any>
-        +set(key: string, value: any, ttl: number): Promise<void>
-        +invalidate(pattern: string): Promise<void>
-    }
-    
-    class DatabaseManager {
-        +getTenantFeatures(tenantId: string): Promise<TenantFeatures>
-        +saveScore(siteId: string, score: GeoScoreResponse): Promise<void>
-        +getScoreHistory(siteId: string): Promise<ScoreHistory[]>
-    }
-    
-    CoordinatorAPI --> ServiceClient
-    CoordinatorAPI --> ScoreCalculator
-    CoordinatorAPI --> CacheManager
-    CoordinatorAPI --> DatabaseManager
-```
-
-### Service Client Implementation
-
-```typescript
-class ServiceClient {
-  private readonly crawlerUrl: string;
-  private readonly promptUrl: string;
-  private readonly logsUrl: string;
-  private readonly circuitBreakers: Map<string, CircuitBreaker>;
-
-  constructor(config: ServiceConfig) {
-    this.crawlerUrl = config.crawlerUrl;
-    this.promptUrl = config.promptUrl;
-    this.logsUrl = config.logsUrl;
-    this.circuitBreakers = new Map();
-  }
-
-  async callAllServices(siteId: string, tenantFeatures: TenantFeatures): Promise<ServiceScores> {
-    const promises = [
-      this.callCrawlerService(siteId),
-      this.callPromptService(siteId),
-      tenantFeatures.logs_enabled ? this.callLogsService(siteId) : Promise.resolve(null)
-    ];
-
-    const [crawler, prompt, logs] = await Promise.allSettled(promises);
-
-    return {
-      crawler: this.extractResult(crawler),
-      prompt: this.extractResult(prompt),
-      logs: this.extractResult(logs)
-    };
-  }
-
-  private async callCrawlerService(siteId: string): Promise<ServiceScore | null> {
-    const breaker = this.getCircuitBreaker('crawler');
-    return breaker.call(async () => {
-      const response = await fetch(`${this.crawlerUrl}/geo/${siteId}`);
-      if (!response.ok) throw new Error(`Crawler API error: ${response.status}`);
-      return response.json();
-    });
-  }
-
-  private extractResult(promiseResult: PromiseSettledResult<any>): ServiceScore | null {
-    if (promiseResult.status === 'fulfilled') {
-      return promiseResult.value;
-    }
-    return null;
-  }
-}
-```
-
----
-
-## 5. Database Schema and Data Management
-
-### Core Tables
-
-#### Tenants Table
-```sql
-CREATE TABLE tenants (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name VARCHAR(255) NOT NULL,
-  domain VARCHAR(255) UNIQUE NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-```
-
-#### Tenant Features Table
-```sql
-CREATE TABLE tenant_features (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
-  logs_enabled BOOLEAN DEFAULT FALSE,
-  crawler_enabled BOOLEAN DEFAULT TRUE,
-  prompt_enabled BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  UNIQUE(tenant_id)
-);
-```
-
-#### GEO Scores Cache Table
-```sql
-CREATE TABLE geo_scores_cache (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  site_id VARCHAR(255) NOT NULL,
-  tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
-  geo_score DECIMAL(5,2) NOT NULL,
-  breakdown JSONB NOT NULL,
-  services_available INTEGER NOT NULL,
-  services_total INTEGER NOT NULL,
-  computed_at TIMESTAMP WITH TIME ZONE NOT NULL,
-  cache_expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  UNIQUE(site_id, tenant_id)
-);
-```
-
-#### Score History Table
-```sql
-CREATE TABLE geo_score_history (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  site_id VARCHAR(255) NOT NULL,
-  tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
-  geo_score DECIMAL(5,2) NOT NULL,
-  breakdown JSONB NOT NULL,
-  services_available INTEGER NOT NULL,
-  computed_at TIMESTAMP WITH TIME ZONE NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-```
-
-### Database Relationships
+### Database Relationship Diagram
 
 ```mermaid
 erDiagram
-    TENANTS ||--o{ TENANT_FEATURES : "has"
-    TENANTS ||--o{ GEO_SCORES_CACHE : "owns"
-    TENANTS ||--o{ GEO_SCORE_HISTORY : "tracks"
+    SITES ||--o{ PAGES : "has many"
+    SITES ||--o{ PROMPT_RUNS : "tested by"
+    SITES ||--o{ SERVER_LOGS : "generates"
+    SITES ||--o{ GEO_SCORES : "scored by"
     
-    TENANTS {
-        uuid id PK
-        varchar name
-        varchar domain
-        timestamp created_at
-        timestamp updated_at
-    }
+    PAGES ||--o{ CONTENT_BLOCKS : "contains"
+    PAGES ||--o{ CRAWLS : "crawled in"
     
-    TENANT_FEATURES {
-        uuid id PK
-        uuid tenant_id FK
-        boolean logs_enabled
-        boolean crawler_enabled
-        boolean prompt_enabled
-        timestamp created_at
-        timestamp updated_at
-    }
+    CONTENT_BLOCKS ||--o{ EMBEDDINGS : "has vector"
     
-    GEO_SCORES_CACHE {
-        uuid id PK
-        varchar site_id
-        uuid tenant_id FK
-        decimal geo_score
-        jsonb breakdown
-        integer services_available
-        integer services_total
-        timestamp computed_at
-        timestamp cache_expires_at
+    PROMPT_TEMPLATES ||--o{ PROMPT_RUNS : "used in"
+    
+    SITES {
+        int id PK
+        string domain
+        string name
+        string crawl_frequency
+        boolean is_active
         timestamp created_at
     }
     
-    GEO_SCORE_HISTORY {
-        uuid id PK
-        varchar site_id
-        uuid tenant_id FK
-        decimal geo_score
-        jsonb breakdown
-        integer services_available
-        timestamp computed_at
-        timestamp created_at
+    PAGES {
+        int id PK
+        int site_id FK
+        string url
+        string title
+        string crawl_status
+        timestamp last_crawled_at
+        string content_hash
+    }
+    
+    CONTENT_BLOCKS {
+        int id PK
+        int page_id FK
+        string block_type
+        text content
+        int position
+        int word_count
+        string language
+    }
+    
+    EMBEDDINGS {
+        int id PK
+        int content_block_id FK
+        vector vector
+        string model_version
+        int dimensions
+    }
+    
+    PROMPT_TEMPLATES {
+        int id PK
+        string name
+        text template
+        string category
+        json variables
+        boolean is_active
+    }
+    
+    PROMPT_RUNS {
+        int id PK
+        int template_id FK
+        int site_id FK
+        text prompt_text
+        text ai_response
+        int response_time_ms
+        int tokens_used
+        float quality_score
+    }
+    
+    SERVER_LOGS {
+        int id PK
+        int site_id FK
+        timestamp timestamp
+        string ip_address
+        string user_agent
+        string path
+        boolean is_ai_crawler
+        string crawler_type
+    }
+    
+    GEO_SCORES {
+        int id PK
+        int site_id FK
+        float overall_score
+        float content_quality
+        float crawl_coverage
+        float ai_crawler_presence
+        float freshness
+        timestamp calculated_at
+        json components
     }
 ```
 
-### Data Management Strategies
+### Why This Schema Design?
 
-#### Caching Strategy
-```typescript
-interface CacheStrategy {
-  ttl: number; // Time to live in seconds
-  refreshThreshold: number; // Refresh when this close to expiry
-  maxRetries: number; // Max retry attempts
-}
+**Normalization Benefits:**
+- **No Data Duplication:** Each piece of information is stored once
+- **Consistency:** Changes to site info update everywhere automatically
+- **Efficiency:** Smaller database size and faster queries
 
-const CACHE_STRATEGIES: Record<string, CacheStrategy> = {
-  geo_score: {
-    ttl: 300, // 5 minutes
-    refreshThreshold: 60, // Refresh when 1 minute left
-    maxRetries: 3
-  },
-  tenant_features: {
-    ttl: 3600, // 1 hour
-    refreshThreshold: 300, // Refresh when 5 minutes left
-    maxRetries: 2
-  }
-};
-```
+**Relationship Benefits:**
+- **Easy Queries:** "Show me all pages for Samsung" becomes simple
+- **Data Integrity:** Can't delete a site if it has pages
+- **Flexibility:** Can add new relationships without changing existing data
 
-#### Data Retention Policy
-```typescript
-class DataRetentionManager {
-  async cleanupOldData(): Promise<void> {
-    // Keep score history for 1 year
-    await this.db.query(`
-      DELETE FROM geo_score_history 
-      WHERE created_at < NOW() - INTERVAL '1 year'
-    `);
-    
-    // Keep cache for 7 days max
-    await this.db.query(`
-      DELETE FROM geo_scores_cache 
-      WHERE cache_expires_at < NOW()
-    `);
-  }
-}
-```
+**Indexing Strategy:**
+- **Primary Keys:** All tables have auto-incrementing IDs
+- **Foreign Keys:** All relationships are properly indexed
+- **Search Fields:** URL, domain, and timestamp fields are indexed
+- **Composite Indexes:** Common query patterns have multi-column indexes
 
 ---
 
-## 6. Frontend Integration and UI Components
+## 7. GEO Scoring System: The Performance Calculator
 
-### React Component Architecture
+### The Complete Scoring Framework
 
-```mermaid
-graph TD
-    A[GEO Dashboard] --> B[Score Display]
-    A --> C[Service Status]
-    A --> D[Score History]
-    A --> E[Settings Panel]
-    
-    B --> B1[Main Score Card]
-    B --> B2[Score Breakdown]
-    B --> B3[Trend Indicators]
-    
-    C --> C1[Service Health]
-    C --> C2[Last Updated]
-    C --> C3[Error States]
-    
-    D --> D1[Historical Chart]
-    D --> D2[Score Timeline]
-    D --> D3[Export Options]
-    
-    E --> E1[Feature Toggles]
-    E --> E2[Refresh Settings]
-    E --> E3[Cache Management]
+Think of GEO scoring like a **comprehensive fitness test**. Just like how a fitness test measures different aspects of health (cardio, strength, flexibility), our GEO score measures different aspects of AI visibility.
+
+### The Four Core Components
+
+#### 1. Content Quality (25% weight)
+**What it measures:** How well-written and informative your content is
+
+**Plain English:** Like grading an essay on clarity, completeness, and usefulness
+
+**Technical Calculation:**
+- **Readability Score:** Measures sentence length, word complexity
+- **Completeness Score:** Checks for missing information (prices, specs, reviews)
+- **Structure Score:** Evaluates headings, lists, and organization
+- **Uniqueness Score:** Measures how original the content is
+
+**Example Scoring:**
+- **High Quality (90-100):** Clear, complete product descriptions with specs, reviews, and comparisons
+- **Medium Quality (60-89):** Good content but missing some details or poorly organized
+- **Low Quality (0-59):** Vague, incomplete, or poorly written content
+
+**Real-World Example:**
+```
+Samsung Galaxy S24 product page:
+- Readability: 85 (clear, concise descriptions)
+- Completeness: 95 (has all specs, prices, reviews)
+- Structure: 90 (well-organized with headings)
+- Uniqueness: 80 (some generic marketing copy)
+- Content Quality Score: 87.5
 ```
 
-### Core React Components
+#### 2. Crawl Coverage (25% weight)
+**What it measures:** How much of your website is being discovered and crawled
 
-#### Main GEO Score Component
-```typescript
-interface GeoScoreProps {
-  siteId: string;
-  autoRefresh?: boolean;
-  refreshInterval?: number;
-}
+**Plain English:** Like measuring how much of a library's collection is catalogued and accessible
 
-const GeoScore: React.FC<GeoScoreProps> = ({ 
-  siteId, 
-  autoRefresh = true, 
-  refreshInterval = 30000 
-}) => {
-  const { data, error, isLoading, refetch } = useGeoScore(siteId, {
-    refetchInterval: autoRefresh ? refreshInterval : false
-  });
+**Technical Calculation:**
+- **Page Discovery Rate:** Percentage of pages found vs estimated total
+- **Crawl Success Rate:** Percentage of pages successfully crawled
+- **Depth Coverage:** How deep into the site structure we've crawled
+- **Update Frequency:** How often pages are re-crawled for updates
 
-  if (isLoading) return <ScoreSkeleton />;
-  if (error) return <ScoreError error={error} onRetry={refetch} />;
-  if (!data) return <NoDataMessage />;
+**Example Scoring:**
+- **High Coverage (90-100):** All important pages discovered and successfully crawled
+- **Medium Coverage (60-89):** Most pages found but some failures or missing sections
+- **Low Coverage (0-59):** Many pages missed or crawl failures
 
-  return (
-    <div className="geo-score-container">
-      <MainScoreCard score={data.geo} />
-      <ScoreBreakdown breakdown={data.breakdown} />
-      <ServiceStatus services={data.breakdown} />
-    </div>
-  );
-};
+**Real-World Example:**
+```
+Samsung.com crawl results:
+- Total pages discovered: 1,250
+- Pages successfully crawled: 1,180
+- Crawl success rate: 94.4%
+- Pages updated in last 30 days: 340
+- Crawl Coverage Score: 89.2
 ```
 
-#### Score Breakdown Component
-```typescript
-const ScoreBreakdown: React.FC<{ breakdown: ScoreBreakdown }> = ({ breakdown }) => {
-  const services = Object.entries(breakdown).map(([key, service]) => ({
-    name: key,
-    ...service
-  }));
+#### 3. AI Crawler Presence (25% weight)
+**What it measures:** How often AI systems actually visit your website
 
-  return (
-    <div className="score-breakdown">
-      <h3>Score Breakdown</h3>
-      <div className="breakdown-grid">
-        {services.map(service => (
-          <ServiceCard key={service.name} service={service} />
-        ))}
-      </div>
-    </div>
-  );
-};
+**Plain English:** Like counting how many times different news reporters visit your store
 
-const ServiceCard: React.FC<{ service: ServiceInfo }> = ({ service }) => {
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'active': return '✅';
-      case 'stale': return '⚠️';
-      case 'error': return '❌';
-      case 'disabled': return '🔒';
-      default: return '❓';
-    }
-  };
+**Technical Calculation:**
+- **Crawler Frequency:** How often AI bots visit your site
+- **Crawler Diversity:** How many different AI systems visit
+- **Page Coverage:** Which pages the AI crawlers are visiting
+- **Recency:** How recently AI crawlers were active
 
-  return (
-    <div className={`service-card ${service.status}`}>
-      <div className="service-header">
-        <span className="service-name">{service.name}</span>
-        <span className="status-icon">{getStatusIcon(service.status)}</span>
-      </div>
-      <div className="service-score">
-        {service.score !== null ? `${service.score}` : '—'}
-      </div>
-      <div className="service-weight">
-        Weight: {service.weight}%
-      </div>
-      <div className="service-timestamp">
-        {service.computed_at ? formatDate(service.computed_at) : 'Never'}
-      </div>
-    </div>
-  );
-};
+**Example Scoring:**
+- **High Presence (90-100):** Daily visits from multiple AI systems
+- **Medium Presence (60-89):** Regular visits from 2-3 AI systems
+- **Low Presence (0-59):** Infrequent or no AI crawler activity
+
+**Real-World Example:**
+```
+Samsung.com AI crawler activity (last 30 days):
+- ChatGPT crawler visits: 45
+- Claude crawler visits: 32
+- Perplexity crawler visits: 28
+- Total unique AI visits: 105
+- AI Crawler Presence Score: 78.5
 ```
 
-### Custom Hooks
+#### 4. Freshness (25% weight)
+**What it measures:** How recent and up-to-date your content is
 
-#### useGeoScore Hook
-```typescript
-interface UseGeoScoreOptions {
-  refetchInterval?: number | false;
-  staleTime?: number;
-  retryOnError?: boolean;
-}
+**Plain English:** Like checking if the milk in your fridge is still fresh
 
-export const useGeoScore = (
-  siteId: string, 
-  options: UseGeoScoreOptions = {}
-) => {
-  const {
-    refetchInterval = 30000,
-    staleTime = 5 * 60 * 1000, // 5 minutes
-    retryOnError = true
-  } = options;
+**Technical Calculation:**
+- **Content Age:** How old the content is
+- **Update Frequency:** How often content is updated
+- **Relevance Score:** Whether content reflects current information
+- **Seasonal Relevance:** Whether content is appropriate for current time
 
-  return useQuery({
-    queryKey: ['geoScore', siteId],
-    queryFn: () => fetchGeoScore(siteId),
-    refetchInterval,
-    staleTime,
-    retry: retryOnError ? 3 : false,
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000)
-  });
-};
+**Example Scoring:**
+- **High Freshness (90-100):** Content updated within last week
+- **Medium Freshness (60-89):** Content updated within last month
+- **Low Freshness (0-59):** Content older than 3 months
+
+**Real-World Example:**
+```
+Samsung Galaxy S24 content:
+- Last updated: 2 days ago
+- Content age score: 95
+- Update frequency: Weekly
+- Relevance: High (current model)
+- Freshness Score: 92.3
 ```
 
-#### useScoreHistory Hook
-```typescript
-export const useScoreHistory = (siteId: string, days: number = 30) => {
-  return useQuery({
-    queryKey: ['scoreHistory', siteId, days],
-    queryFn: () => fetchScoreHistory(siteId, days),
-    staleTime: 10 * 60 * 1000, // 10 minutes
-  });
-};
+### GEO Score Calculation Formula
+
+**Overall GEO Score = (Content Quality × 0.25) + (Crawl Coverage × 0.25) + (AI Crawler Presence × 0.25) + (Freshness × 0.25)**
+
+**Example Calculation:**
+```
+Samsung Galaxy S24:
+- Content Quality: 87.5 × 0.25 = 21.875
+- Crawl Coverage: 89.2 × 0.25 = 22.3
+- AI Crawler Presence: 78.5 × 0.25 = 19.625
+- Freshness: 92.3 × 0.25 = 23.075
+- Overall GEO Score: 86.875
 ```
 
-### UI State Management
+### GEO Score Interpretation
 
-```mermaid
-stateDiagram-v2
-    [*] --> Loading
-    Loading --> Success: Data loaded
-    Loading --> Error: API failed
-    Success --> Refreshing: User refresh
-    Success --> Success: Auto refresh
-    Error --> Loading: Retry
-    Refreshing --> Success: Refresh complete
-    Refreshing --> Error: Refresh failed
-    Success --> [*]: Component unmount
-    Error --> [*]: Component unmount
-```
+**Excellent (90-100):** Your content is highly visible in AI responses
+- Content is comprehensive and well-written
+- AI systems regularly crawl your site
+- Information is current and relevant
+- You're likely to appear in AI-generated answers
 
----
+**Good (70-89):** Your content has good AI visibility
+- Most aspects are strong with room for improvement
+- AI systems visit regularly but not daily
+- Content is generally current and useful
 
-## 7. Error Handling and Resilience
+**Fair (50-69):** Your content has moderate AI visibility
+- Some areas need improvement
+- AI crawler activity is inconsistent
+- Content may be outdated or incomplete
 
-### Error Classification System
+**Poor (0-49):** Your content has low AI visibility
+- Significant improvements needed across all areas
+- AI systems rarely or never visit
+- Content is likely outdated or poorly structured
 
-```typescript
-enum ErrorType {
-  NETWORK_ERROR = 'NETWORK_ERROR',
-  API_ERROR = 'API_ERROR',
-  TIMEOUT_ERROR = 'TIMEOUT_ERROR',
-  VALIDATION_ERROR = 'VALIDATION_ERROR',
-  AUTHENTICATION_ERROR = 'AUTHENTICATION_ERROR',
-  RATE_LIMIT_ERROR = 'RATE_LIMIT_ERROR',
-  SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE'
-}
-
-interface ErrorContext {
-  type: ErrorType;
-  service: string;
-  siteId: string;
-  timestamp: string;
-  retryCount: number;
-  originalError?: Error;
-}
-```
-
-### Circuit Breaker Implementation
-
-```typescript
-class CircuitBreaker {
-  private failureCount = 0;
-  private lastFailureTime = 0;
-  private state: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED';
-  
-  constructor(
-    private threshold = 5,
-    private timeout = 60000,
-    private resetTimeout = 30000
-  ) {}
-
-  async call<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.state === 'OPEN') {
-      if (Date.now() - this.lastFailureTime > this.resetTimeout) {
-        this.state = 'HALF_OPEN';
-      } else {
-        throw new Error('Circuit breaker is OPEN');
-      }
-    }
-
-    try {
-      const result = await fn();
-      this.onSuccess();
-      return result;
-    } catch (error) {
-      this.onFailure();
-      throw error;
-    }
-  }
-
-  private onSuccess(): void {
-    this.failureCount = 0;
-    this.state = 'CLOSED';
-  }
-
-  private onFailure(): void {
-    this.failureCount++;
-    this.lastFailureTime = Date.now();
-    
-    if (this.failureCount >= this.threshold) {
-      this.state = 'OPEN';
-    }
-  }
-}
-```
-
-### Retry Strategy with Exponential Backoff
-
-```typescript
-class RetryManager {
-  async executeWithRetry<T>(
-    fn: () => Promise<T>,
-    maxRetries = 3,
-    baseDelay = 1000,
-    maxDelay = 30000
-  ): Promise<T> {
-    let lastError: Error;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        return await fn();
-      } catch (error) {
-        lastError = error as Error;
-        
-        if (attempt === maxRetries) {
-          throw lastError;
-        }
-
-        const delay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
-        const jitter = Math.random() * 0.1 * delay; // Add jitter
-        
-        await new Promise(resolve => 
-          setTimeout(resolve, delay + jitter)
-        );
-      }
-    }
-
-    throw lastError!;
-  }
-}
-```
-
-### Error Recovery Strategies
+### GEO Score Calculation Flowchart
 
 ```mermaid
 flowchart TD
-    A[Error Occurs] --> B{Error Type?}
+    A[Start GEO Calculation] --> B[Gather Content Quality Data]
+    B --> C[Calculate Readability Score]
+    C --> D[Calculate Completeness Score]
+    D --> E[Calculate Structure Score]
+    E --> F[Calculate Uniqueness Score]
+    F --> G[Combine for Content Quality]
     
-    B -->|Network| C[Retry with Backoff]
-    B -->|Timeout| D[Increase Timeout & Retry]
-    B -->|Rate Limit| E[Wait & Retry]
-    B -->|Service Down| F[Use Circuit Breaker]
-    B -->|Auth Error| G[Refresh Token & Retry]
-    B -->|Validation| H[Log & Return Error]
+    G --> H[Gather Crawl Coverage Data]
+    H --> I[Calculate Page Discovery Rate]
+    I --> J[Calculate Crawl Success Rate]
+    J --> K[Calculate Depth Coverage]
+    K --> L[Calculate Update Frequency]
+    L --> M[Combine for Crawl Coverage]
     
-    C --> I{Retry Success?}
-    D --> I
-    E --> I
-    F --> J[Return Cached Data]
-    G --> I
-    H --> K[Return Error to User]
+    M --> N[Gather AI Crawler Data]
+    N --> O[Calculate Crawler Frequency]
+    O --> P[Calculate Crawler Diversity]
+    P --> Q[Calculate Page Coverage]
+    Q --> R[Calculate Recency]
+    R --> S[Combine for AI Crawler Presence]
     
-    I -->|Yes| L[Return Success]
-    I -->|No| M{Max Retries?}
+    S --> T[Gather Freshness Data]
+    T --> U[Calculate Content Age]
+    U --> V[Calculate Update Frequency]
+    V --> W[Calculate Relevance Score]
+    W --> X[Calculate Seasonal Relevance]
+    X --> Y[Combine for Freshness]
     
-    M -->|No| C
-    M -->|Yes| N[Return Partial Data]
-    
-    J --> O[End]
-    K --> O
-    L --> O
-    N --> O
-```
-
----
-
-## 8. Performance Optimization and Caching
-
-### Multi-Layer Caching Strategy
-
-```mermaid
-graph TB
-    A[Client Request] --> B[CDN Cache]
-    B --> C{CDN Hit?}
-    C -->|Yes| D[Return Cached Response]
-    C -->|No| E[API Gateway]
-    
-    E --> F[Redis Cache]
-    F --> G{Redis Hit?}
-    G -->|Yes| H[Return Cached Data]
-    G -->|No| I[Service Layer]
-    
-    I --> J[Database Cache]
-    J --> K{DB Cache Hit?}
-    K -->|Yes| L[Return Cached Score]
-    K -->|No| M[Calculate New Score]
-    
-    M --> N[Store in All Caches]
-    N --> O[Return Response]
-    
-    style B fill:#e1f5fe
-    style F fill:#f3e5f5
-    style J fill:#e8f5e8
-```
-
-### Cache Implementation
-
-```typescript
-class CacheManager {
-  constructor(
-    private redis: Redis,
-    private db: Database,
-    private cdn: CDNClient
-  ) {}
-
-  async get<T>(key: string, ttl: number = 300): Promise<T | null> {
-    // Try CDN first
-    const cdnData = await this.cdn.get(key);
-    if (cdnData) return cdnData;
-
-    // Try Redis
-    const redisData = await this.redis.get(key);
-    if (redisData) {
-      // Update CDN
-      await this.cdn.set(key, redisData, ttl);
-      return JSON.parse(redisData);
-    }
-
-    // Try Database
-    const dbData = await this.db.getCachedScore(key);
-    if (dbData) {
-      // Update Redis and CDN
-      await this.redis.setex(key, ttl, JSON.stringify(dbData));
-      await this.cdn.set(key, dbData, ttl);
-      return dbData;
-    }
-
-    return null;
-  }
-
-  async set<T>(key: string, data: T, ttl: number = 300): Promise<void> {
-    const serialized = JSON.stringify(data);
-    
-    // Store in all layers
-    await Promise.all([
-      this.redis.setex(key, ttl, serialized),
-      this.db.setCachedScore(key, data, ttl),
-      this.cdn.set(key, data, ttl)
-    ]);
-  }
-}
-```
-
-### Performance Monitoring
-
-```typescript
-class PerformanceMonitor {
-  private metrics: Map<string, number[]> = new Map();
-
-  recordTiming(operation: string, duration: number): void {
-    if (!this.metrics.has(operation)) {
-      this.metrics.set(operation, []);
-    }
-    
-    const timings = this.metrics.get(operation)!;
-    timings.push(duration);
-    
-    // Keep only last 100 measurements
-    if (timings.length > 100) {
-      timings.shift();
-    }
-  }
-
-  getAverageTiming(operation: string): number {
-    const timings = this.metrics.get(operation) || [];
-    if (timings.length === 0) return 0;
-    
-    return timings.reduce((sum, time) => sum + time, 0) / timings.length;
-  }
-
-  getP95Timing(operation: string): number {
-    const timings = this.metrics.get(operation) || [];
-    if (timings.length === 0) return 0;
-    
-    const sorted = [...timings].sort((a, b) => a - b);
-    const index = Math.ceil(sorted.length * 0.95) - 1;
-    return sorted[index];
-  }
-}
-```
-
----
-
-## 9. Security and Compliance
-
-### Authentication and Authorization
-
-```typescript
-interface AuthContext {
-  tenantId: string;
-  userId: string;
-  permissions: string[];
-  features: TenantFeatures;
-}
-
-class AuthMiddleware {
-  async authenticate(req: Request): Promise<AuthContext> {
-    const token = this.extractToken(req);
-    const payload = await this.verifyToken(token);
-    
-    const tenant = await this.getTenant(payload.tenantId);
-    const features = await this.getTenantFeatures(payload.tenantId);
-    
-    return {
-      tenantId: payload.tenantId,
-      userId: payload.userId,
-      permissions: payload.permissions,
-      features
-    };
-  }
-
-  private extractToken(req: Request): string {
-    const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) {
-      throw new Error('Invalid authorization header');
-    }
-    return authHeader.substring(7);
-  }
-}
-```
-
-### Data Privacy and PII Protection
-
-```typescript
-class PIIRedactor {
-  private patterns = {
-    email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
-    phone: /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/g,
-    ssn: /\b\d{3}-\d{2}-\d{4}\b/g,
-    creditCard: /\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b/g
-  };
-
-  redact(text: string): string {
-    let redacted = text;
-    
-    Object.entries(this.patterns).forEach(([type, pattern]) => {
-      redacted = redacted.replace(pattern, `[${type.toUpperCase()}]`);
-    });
-    
-    return redacted;
-  }
-}
-```
-
-### Rate Limiting
-
-```typescript
-class RateLimiter {
-  constructor(private redis: Redis) {}
-
-  async checkLimit(
-    key: string, 
-    limit: number, 
-    window: number
-  ): Promise<{ allowed: boolean; remaining: number; resetTime: number }> {
-    const current = await this.redis.incr(key);
-    
-    if (current === 1) {
-      await this.redis.expire(key, window);
-    }
-    
-    const ttl = await this.redis.ttl(key);
-    const remaining = Math.max(0, limit - current);
-    
-    return {
-      allowed: current <= limit,
-      remaining,
-      resetTime: Date.now() + (ttl * 1000)
-    };
-  }
-}
-```
-
----
-
-## 10. Deployment and Infrastructure
-
-### Infrastructure Architecture
-
-```mermaid
-graph TB
-    subgraph "Frontend (Vercel)"
-        A[React App]
-        B[Static Assets]
-        C[Edge Functions]
-    end
-    
-    subgraph "API Layer (Cloud Run)"
-        D[Coordinator API]
-        E[Load Balancer]
-        F[Auto Scaling]
-    end
-    
-    subgraph "Data Layer"
-        G[(Supabase PostgreSQL)]
-        H[(Upstash Redis)]
-        I[S3 Storage]
-    end
-    
-    subgraph "External Services"
-        J[Crawler API]
-        K[Prompt API]
-        L[Logs API]
-    end
-    
-    A --> E
-    E --> D
-    D --> G
-    D --> H
-    D --> I
-    D --> J
-    D --> K
-    D --> L
+    Y --> Z[Apply Weights and Calculate Final Score]
+    Z --> AA[Store GEO Score in Database]
+    AA --> BB[End]
     
     style A fill:#e1f5fe
-    style D fill:#f3e5f5
-    style G fill:#e8f5e8
-    style H fill:#fff3e0
+    style BB fill:#e8f5e8
+    style Z fill:#fff3e0
 ```
 
-### Docker Configuration
+### Why These Four Components?
 
-#### Coordinator API Dockerfile
-```dockerfile
-FROM node:18-alpine
+**Content Quality:** Without good content, AI systems have nothing valuable to reference
+**Crawl Coverage:** If AI systems can't find your content, they can't use it
+**AI Crawler Presence:** Real-world validation that AI systems are actually interested
+**Freshness:** Outdated information hurts credibility and usefulness
 
-WORKDIR /app
+### Score Updates and Monitoring
 
-COPY package*.json ./
-RUN npm ci --only=production
+**Update Frequency:**
+- **Real-time:** When new content is crawled
+- **Daily:** AI crawler presence scores
+- **Weekly:** Full recalculation for all sites
+- **Monthly:** Historical trend analysis
 
-COPY src/ ./src/
-COPY tsconfig.json ./
-
-RUN npm run build
-
-EXPOSE 3000
-
-CMD ["node", "dist/index.js"]
-```
-
-#### Docker Compose for Development
-```yaml
-version: '3.8'
-
-services:
-  coordinator-api:
-    build: ./coordinator-api
-    ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=development
-      - DATABASE_URL=postgresql://user:pass@postgres:5432/geo_scores
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      - postgres
-      - redis
-
-  postgres:
-    image: postgres:15
-    environment:
-      - POSTGRES_DB=geo_scores
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=pass
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-
-volumes:
-  postgres_data:
-  redis_data:
-```
-
-### Kubernetes Deployment
-
-#### Coordinator API Deployment
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: coordinator-api
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: coordinator-api
-  template:
-    metadata:
-      labels:
-        app: coordinator-api
-    spec:
-      containers:
-      - name: coordinator-api
-        image: geo-coordinator-api:latest
-        ports:
-        - containerPort: 3000
-        env:
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: geo-secrets
-              key: database-url
-        - name: REDIS_URL
-          valueFrom:
-            secretKeyRef:
-              name: geo-secrets
-              key: redis-url
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "250m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 3000
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: 3000
-          initialDelaySeconds: 5
-          periodSeconds: 5
-```
-
-### Monitoring and Observability
-
-```typescript
-class MonitoringService {
-  constructor(
-    private prometheus: PrometheusClient,
-    private logger: Logger
-  ) {}
-
-  recordApiCall(service: string, duration: number, success: boolean): void {
-    this.prometheus.histogram('api_call_duration_seconds', duration, {
-      service,
-      success: success.toString()
-    });
-  }
-
-  recordScoreCalculation(siteId: string, score: number, servicesUsed: number): void {
-    this.prometheus.gauge('geo_score', score, {
-      site_id: siteId,
-      services_used: servicesUsed.toString()
-    });
-  }
-
-  recordError(error: Error, context: ErrorContext): void {
-    this.logger.error('GEO Score Error', {
-      error: error.message,
-      stack: error.stack,
-      context
-    });
-  }
-}
-```
+**Monitoring Alerts:**
+- **Score Drops:** Alert when GEO score decreases by 10+ points
+- **Crawler Issues:** Alert when AI crawler presence drops significantly
+- **Content Staleness:** Alert when content hasn't been updated in 30+ days
+- **Crawl Failures:** Alert when crawl success rate drops below 80%
 
 ---
 
-## Conclusion
-
-This comprehensive guide provides a complete technical and theoretical foundation for implementing a unified GEO score integration system. The architecture leverages modern patterns like the Coordinator pattern, Circuit Breaker, and multi-layer caching to create a robust, scalable solution.
-
-Key benefits of this approach:
-- **Unified Interface:** Single API endpoint for all GEO score data
-- **Dynamic Weighting:** Automatic adjustment based on service availability
-- **High Availability:** Graceful degradation when services are unavailable
-- **Performance Optimized:** Multi-layer caching and efficient data management
-- **Scalable:** Cloud-native architecture with auto-scaling capabilities
-- **Maintainable:** Clear separation of concerns and comprehensive error handling
-
-The system is designed to be startup-friendly while providing enterprise-grade reliability and performance.
+*[This is Part 3 of the comprehensive integration documentation. The next parts will cover UI/UX documentation, error handling, and implementation details.]*
